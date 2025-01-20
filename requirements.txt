@@ -1,0 +1,8 @@
+azure-search-documents
+azure-identity
+fastapi
+uvicorn
+python-dotenv
+websockets
+twilio
+asyncio
