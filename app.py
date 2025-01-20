@@ -15,8 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_API_ENDPOINT = os.getenv("OPENAI_API_ENDPOINT")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_API_ENDPOINT = os.getenv("AZURE_OPENAI_API_ENDPOINT")
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
@@ -67,8 +67,8 @@ async def handle_media_stream(websocket: WebSocket):
     stream_sid = None
 
     async with websockets.connect(
-        OPENAI_API_ENDPOINT,
-        additional_headers={"api-key": OPENAI_API_KEY},
+        AZURE_OPENAI_API_ENDPOINT,
+        additional_headers={"api-key": AZURE_OPENAI_API_KEY},
     ) as openai_ws:
         await initialize_session(openai_ws)
 
