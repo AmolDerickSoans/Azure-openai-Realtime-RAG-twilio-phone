@@ -59,68 +59,80 @@ async def handle_incoming_call(request: Request):
     return HTMLResponse(content=str(response), media_type="application/xml")
 
 
+# Enhanced logging for WebSocket connection
+logger.info("Initializing WebSocket connection for media stream handling")
+
 @app.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
+    # Log connection attempt
     logger.info("WebSocket connection opened.")
     await websocket.accept()
+    logger.debug("WebSocket connection accepted successfully")
 
     stream_sid = None
-    input_audio_queue = asyncio.Queue()
-    audio_queue = asyncio.Queue()
+    input_audio_queue = asyncio.Queue()  # Queue for storing incoming audio chunks
+    audio_queue = asyncio.Queue()  # Queue for processed audio chunks
     
     # Constants for audio buffering
-    BUFFER_SIZE = 20 * 160  # 0.4 seconds of audio at 8kHz
+    BUFFER_SIZE = 20 * 160  # 0.4 seconds of audio at 8kHz - optimal size for processing
 
+    # Establish connection to Azure OpenAI API
+    logger.info("Establishing connection to Azure OpenAI API")
     async with websockets.connect(
         AZURE_OPENAI_API_ENDPOINT,
         additional_headers={"api-key": AZURE_OPENAI_API_KEY},
     ) as openai_ws:
+        logger.debug("Azure OpenAI WebSocket connection established")
         await initialize_session(openai_ws)
 
         async def receive_from_twilio():
             nonlocal stream_sid
-            # Buffers for audio processing
-            inbuffer = bytearray(b'')
-            outbuffer = bytearray(b'')
+            # Initialize audio processing buffers
+            inbuffer = bytearray(b'')  # Buffer for incoming audio
+            outbuffer = bytearray(b'')  # Buffer for outgoing audio
             inbound_chunks_started = False
             latest_inbound_timestamp = 0
             
             try:
+                logger.debug("Starting Twilio audio stream reception")
                 async for message in websocket.iter_text():
                     data = json.loads(message)
                     if data["event"] == "media":
-                        # Decode the audio payload
+                        # Process incoming audio data
                         chunk = base64.b64decode(data["media"]["payload"])
                         media_timestamp = int(data["media"].get("timestamp", 0))
                         
-                        # Handle silence filling for dropped packets
+                        # Handle silence filling for dropped packets to maintain audio continuity
                         if inbound_chunks_started:
                             if latest_inbound_timestamp + 20 < media_timestamp:
                                 bytes_to_fill = 8 * (media_timestamp - (latest_inbound_timestamp + 20))
+                                logger.debug(f"Filling {bytes_to_fill} bytes of silence for dropped packets")
                                 inbuffer.extend(b'\xff' * bytes_to_fill)
                         else:
                             inbound_chunks_started = True
                             latest_inbound_timestamp = media_timestamp
+                            logger.debug("First audio chunk received, starting stream processing")
                         
                         latest_inbound_timestamp = media_timestamp
                         inbuffer.extend(chunk)
                         
-                        # Process buffered audio
+                        # Process buffered audio in fixed-size chunks
                         while len(inbuffer) >= BUFFER_SIZE:
-                            # Store the input audio chunk for processing
+                            logger.debug(f"Processing audio buffer of size {BUFFER_SIZE}")
                             input_audio_queue.put_nowait(inbuffer[:BUFFER_SIZE])
                             
-                            # Format for OpenAI
+                            # Prepare audio chunk for OpenAI processing
                             audio_append = {
                                 "type": "input_audio_buffer.append",
                                 "audio": base64.b64encode(inbuffer[:BUFFER_SIZE]).decode('ascii'),
                             }
                             await openai_ws.send(json.dumps(audio_append))
+                            logger.debug("Audio chunk sent to OpenAI for processing")
                             
                             # Clear processed buffer
                             inbuffer = inbuffer[BUFFER_SIZE:]
                     elif data["event"] == "start":
-                        # Handle stream_sid extraction with proper error handling
+                        # Extract and validate stream SID
                         try:
                             stream_sid = data.get("streamSid") or data.get("start", {}).get("streamSid")
                             if not stream_sid:
@@ -132,21 +144,25 @@ async def handle_media_stream(websocket: WebSocket):
             except WebSocketDisconnect:
                 logger.warning("WebSocket disconnected by client.")
                 if openai_ws.open:
+                    logger.info("Closing OpenAI WebSocket connection")
                     await openai_ws.close()
 
         async def send_to_twilio():
             try:
+                logger.debug("Starting OpenAI response processing")
                 async for openai_message in openai_ws:
                     response = json.loads(openai_message)
 
                     if response.get("type") == "response.audio.delta" and "delta" in response:
+                        # Process audio response from OpenAI
+                        logger.debug("Received audio response from OpenAI")
                         chunk = base64.b64decode(response["delta"])
                         
                         # Process audio according to Exotel requirements
                         exotel_audio = np.frombuffer(chunk, dtype=np.uint8)
                         exotel_audio_bytes = exotel_audio.tobytes()
                         
-                        # Chunk the audio as per Exotel requirements
+                        # Configure chunk sizes according to Exotel specifications
                         EXOTEL_MIN_CHUNK_SIZE = 3200
                         EXOTEL_MAX_CHUNK_SIZE = 100000
                         EXOTEL_CHUNK_MULTIPLE = 320
@@ -157,13 +173,15 @@ async def handle_media_stream(websocket: WebSocket):
                                 (len(exotel_audio_bytes) // EXOTEL_CHUNK_MULTIPLE) * EXOTEL_CHUNK_MULTIPLE
                             )
                         )
+                        logger.debug(f"Processing audio with chunk size: {valid_chunk_size}")
                         
+                        # Split audio into appropriate chunk sizes
                         chunked_payloads = [
                             exotel_audio_bytes[i:i + valid_chunk_size] 
                             for i in range(0, len(exotel_audio_bytes), valid_chunk_size)
                         ]
                         
-                        # Send each chunk with appropriate metadata
+                        # Send processed audio chunks back to Twilio
                         for chunk in chunked_payloads:
                             audio_payload = base64.b64encode(chunk).decode("ascii")
                             audio_delta = {
@@ -175,18 +193,22 @@ async def handle_media_stream(websocket: WebSocket):
                             }
                             
                             await websocket.send_text(json.dumps(audio_delta))
+                            logger.debug("Audio chunk sent back to Twilio")
 
-                    # Handle function calls for RAG
+                    # Handle RAG function calls
                     if response.get("type") == "response.function_call_arguments.done":
                         function_name = response["name"]
                         if function_name == "get_additional_context":
                             query = json.loads(response["arguments"]).get("query", "")
+                            logger.info(f"Processing RAG query: {query}")
                             search_results = azure_search_rag(query)
                             logger.info(f"RAG Results: {search_results}")
                             await send_function_output(openai_ws, response["call_id"], search_results)
             except Exception as e:
-                logger.error(f"Error in send_to_twilio: {e}")
+                logger.error(f"Error in send_to_twilio: {e}", exc_info=True)
 
+        # Start both receive and send tasks concurrently
+        logger.info("Starting concurrent audio processing tasks")
         await asyncio.gather(receive_from_twilio(), send_to_twilio())
 
 
