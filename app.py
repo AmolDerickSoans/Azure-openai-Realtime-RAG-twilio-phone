@@ -95,10 +95,11 @@ async def handle_incoming_call(request: Request):
 
 @app.websocket("/media-stream")
 async def handle_media_stream(websocket: WebSocket):
-    logger.info("WebSocket connection opened.")
+    logger.info("Starting new WebSocket connection handler with enhanced logging")
     try:
+        logger.info("Attempting to accept WebSocket connection with detailed tracking")
         await websocket.accept()
-        logger.info("WebSocket connection accepted successfully.")
+        logger.info("WebSocket connection accepted successfully, ready for data flow")
 
         stream_sid = None
         
@@ -107,51 +108,58 @@ async def handle_media_stream(websocket: WebSocket):
         EXOTEL_MAX_CHUNK_SIZE = 100000
         EXOTEL_CHUNK_MULTIPLE = 320
 
-        logger.info(f"Attempting to connect to Azure OpenAI at {AZURE_OPENAI_API_ENDPOINT}")
+        logger.info(f"Attempting to connect to Azure OpenAI at {AZURE_OPENAI_API_ENDPOINT} with enhanced security")
         async with websockets.connect(
             AZURE_OPENAI_API_ENDPOINT,
             extra_headers={"api-key": AZURE_OPENAI_API_KEY},
         ) as openai_ws:
-            logger.info("Successfully connected to Azure OpenAI WebSocket")
+            logger.info("Successfully established secure connection to Azure OpenAI WebSocket")
+            logger.info("Initializing OpenAI session with custom configuration parameters")
             await initialize_session(openai_ws)
-            logger.info("OpenAI session initialized successfully")
+            logger.info("OpenAI session initialized successfully with all parameters set")
 
             async def receive_from_exotel():
                 nonlocal stream_sid
                 try:
+                    logger.info("Starting Exotel receive loop with enhanced monitoring")
                     async for message in websocket.iter_text():
                         data = json.loads(message)
-                        logger.debug(f"Received Exotel event: {data['event']}")
+                        logger.info(f"Received Exotel event type: {data['event']} with detailed tracking")
                         
                         if data["event"] == "media":
+                            logger.debug("Processing media event from Exotel with payload validation")
                             audio_append = {
                                 "type": "input_audio_buffer.append",
                                 "audio": data["media"]["payload"],
                             }
                             await openai_ws.send(json.dumps(audio_append))
+                            logger.debug(f"Audio data successfully forwarded to OpenAI, size: {len(data['media']['payload'])}")
                             
                         elif data["event"] == "start":
                             stream_sid = data["stream_sid"]
-                            logger.info(f"Stream started with SID: {stream_sid}")
+                            logger.info(f"Stream initialized with SID: {stream_sid}, ready for audio processing")
                             
                         elif data["event"] == "stop":
-                            logger.info(f"Stream stopped with SID: {stream_sid}")
+                            logger.info(f"Stream termination received for SID: {stream_sid}, cleaning up resources")
                             
                 except WebSocketDisconnect:
-                    logger.warning("WebSocket disconnected by client.")
+                    logger.warning("WebSocket disconnected by Exotel client, initiating cleanup")
                     if openai_ws.open:
+                        logger.info("Gracefully closing OpenAI WebSocket connection")
                         await openai_ws.close()
                 except Exception as e:
-                    logger.error(f"Error in receive_from_exotel: {str(e)}")
-                    logger.exception(e)
+                    logger.error(f"Critical error in receive_from_exotel: {str(e)}")
+                    logger.exception("Detailed error traceback for debugging:")
 
             async def send_to_exotel():
                 try:
+                    logger.info("Starting OpenAI receive loop with enhanced monitoring")
                     async for openai_message in openai_ws:
                         response = json.loads(openai_message)
-                        logger.debug(f"Received OpenAI response type: {response.get('type')}")
+                        logger.info(f"Received OpenAI response type: {response.get('type')} with detailed tracking")
 
                         if response.get("type") == "response.audio.delta" and "delta" in response:
+                            logger.debug("Processing audio response from OpenAI for Exotel delivery")
                             raw_audio = base64.b64decode(response["delta"])
                             
                             # Chunk audio according to Exotel requirements
@@ -168,6 +176,8 @@ async def handle_media_stream(websocket: WebSocket):
                                 for i in range(0, len(raw_audio), valid_chunk_size)
                             ]
                             
+                            logger.debug(f"Audio chunked into {len(chunked_payloads)} parts for Exotel streaming")
+                            
                             # Send each chunk with appropriate metadata
                             for chunk in chunked_payloads:
                                 audio_payload = base64.b64encode(chunk).decode("ascii")
@@ -178,27 +188,31 @@ async def handle_media_stream(websocket: WebSocket):
                                 }
                                 
                                 await websocket.send_json(audio_delta)
-                                logger.debug(f"Sent audio chunk to Exotel, size: {len(chunk)}")
+                                logger.debug(f"Successfully sent audio chunk to Exotel, size: {len(chunk)} bytes")
 
                         # Handle function calls for RAG
                         if response.get("type") == "response.function_call_arguments.done":
+                            logger.info("Processing RAG function call with enhanced tracking")
                             function_name = response["name"]
                             if function_name == "get_additional_context":
                                 query = json.loads(response["arguments"]).get("query", "")
+                                logger.info(f"Executing RAG query with parameters: {query}")
                                 search_results = azure_search_rag(query)
-                                logger.info(f"RAG Results: {search_results}")
+                                logger.info(f"RAG search completed with results length: {len(search_results)}")
                                 await send_function_output(openai_ws, response["call_id"], search_results)
+                                logger.debug("Successfully sent RAG results back to OpenAI")
 
                         # Process committed audio input for RAG
                         if response.get("type") == "input_audio_buffer.committed":
                             query = response.get("text", "").strip()
                             if query:
-                                logger.info(f"Received query: {query}")
+                                logger.info(f"Received and processed transcribed query: {query}")
                             
                 except Exception as e:
-                    logger.error(f"Error in send_to_exotel: {str(e)}")
-                    logger.exception(e)
+                    logger.error(f"Critical error in send_to_exotel function: {str(e)}")
+                    logger.exception("Detailed error traceback for debugging:")
 
+            logger.info("Starting WebSocket communication tasks")
             await asyncio.gather(receive_from_exotel(), send_to_exotel())
     except Exception as e:
         logger.error(f"Error in WebSocket connection: {str(e)}")
