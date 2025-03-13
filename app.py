@@ -92,8 +92,15 @@ async def handle_media_stream(websocket: WebSocket):
                         }
                         await openai_ws.send(json.dumps(audio_append))
                     elif data["event"] == "start":
-                        stream_sid = data["start"]["streamSid"]
-                        logger.info(f"Stream started with SID: {stream_sid}")
+                        # Handle stream_sid extraction with proper error handling
+                        try:
+                            stream_sid = data.get("streamSid") or data.get("start", {}).get("streamSid")
+                            if not stream_sid:
+                                logger.warning("Could not find streamSid in the data")
+                            else:
+                                logger.info(f"Stream started with SID: {stream_sid}")
+                        except Exception as e:
+                            logger.error(f"Error extracting streamSid: {e}")
             except WebSocketDisconnect:
                 logger.warning("WebSocket disconnected by client.")
                 if openai_ws.open:
