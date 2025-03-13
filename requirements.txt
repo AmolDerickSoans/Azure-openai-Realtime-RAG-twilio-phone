@@ -3,6 +3,7 @@ azure-identity
 fastapi
 uvicorn
 python-dotenv
-websockets
+websockets>=11.0.3
 twilio
-asyncio
+python-multipart
+
