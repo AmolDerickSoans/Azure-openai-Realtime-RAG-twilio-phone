@@ -6,4 +6,5 @@ python-dotenv
 websockets>=11.0.3
 twilio
 python-multipart
+numpy
 

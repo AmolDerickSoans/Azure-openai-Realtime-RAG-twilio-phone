@@ -4,6 +4,7 @@ import base64
 import asyncio
 import websockets
 import logging
+import numpy as np
 from fastapi import FastAPI, WebSocket, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
