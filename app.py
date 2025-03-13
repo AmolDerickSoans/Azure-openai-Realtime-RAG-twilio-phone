@@ -66,6 +66,10 @@ async def handle_media_stream(websocket: WebSocket):
 
     stream_sid = None
     input_audio_queue = asyncio.Queue()
+    audio_queue = asyncio.Queue()
+    
+    # Constants for audio buffering
+    BUFFER_SIZE = 20 * 160  # 0.4 seconds of audio at 8kHz
 
     async with websockets.connect(
         AZURE_OPENAI_API_ENDPOINT,
@@ -75,22 +79,46 @@ async def handle_media_stream(websocket: WebSocket):
 
         async def receive_from_twilio():
             nonlocal stream_sid
+            # Buffers for audio processing
+            inbuffer = bytearray(b'')
+            outbuffer = bytearray(b'')
+            inbound_chunks_started = False
+            latest_inbound_timestamp = 0
+            
             try:
                 async for message in websocket.iter_text():
                     data = json.loads(message)
                     if data["event"] == "media":
                         # Decode the audio payload
                         chunk = base64.b64decode(data["media"]["payload"])
+                        media_timestamp = int(data["media"].get("timestamp", 0))
                         
-                        # Store the input audio chunk for processing
-                        input_audio_queue.put_nowait(chunk)
+                        # Handle silence filling for dropped packets
+                        if inbound_chunks_started:
+                            if latest_inbound_timestamp + 20 < media_timestamp:
+                                bytes_to_fill = 8 * (media_timestamp - (latest_inbound_timestamp + 20))
+                                inbuffer.extend(b'\xff' * bytes_to_fill)
+                        else:
+                            inbound_chunks_started = True
+                            latest_inbound_timestamp = media_timestamp
                         
-                        # Format for OpenAI
-                        audio_append = {
-                            "type": "input_audio_buffer.append",
-                            "audio": data["media"]["payload"],
-                        }
-                        await openai_ws.send(json.dumps(audio_append))
+                        latest_inbound_timestamp = media_timestamp
+                        inbuffer.extend(chunk)
+                        
+                        # Process buffered audio
+                        while len(inbuffer) >= BUFFER_SIZE:
+                            # Store the input audio chunk for processing
+                            input_audio_queue.put_nowait(inbuffer[:BUFFER_SIZE])
+                            
+                            # Format for OpenAI
+                            audio_append = {
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(inbuffer[:BUFFER_SIZE]).decode('ascii'),
+                            }
+                            await openai_ws.send(json.dumps(audio_append))
+                            
+                            # Clear processed buffer
+                            inbuffer = inbuffer[BUFFER_SIZE:]
                     elif data["event"] == "start":
                         # Handle stream_sid extraction with proper error handling
                         try:
@@ -123,15 +151,15 @@ async def handle_media_stream(websocket: WebSocket):
                         EXOTEL_MAX_CHUNK_SIZE = 100000
                         EXOTEL_CHUNK_MULTIPLE = 320
                         valid_chunk_size = max(
-                            EXOTEL_MIN_CHUNK_SIZE,
+                            EXOTEL_MIN_CHUNK_SIZE, 
                             min(
-                                EXOTEL_MAX_CHUNK_SIZE,
+                                EXOTEL_MAX_CHUNK_SIZE, 
                                 (len(exotel_audio_bytes) // EXOTEL_CHUNK_MULTIPLE) * EXOTEL_CHUNK_MULTIPLE
                             )
                         )
                         
                         chunked_payloads = [
-                            exotel_audio_bytes[i:i + valid_chunk_size]
+                            exotel_audio_bytes[i:i + valid_chunk_size] 
                             for i in range(0, len(exotel_audio_bytes), valid_chunk_size)
                         ]
                         
@@ -140,10 +168,13 @@ async def handle_media_stream(websocket: WebSocket):
                             audio_payload = base64.b64encode(chunk).decode("ascii")
                             audio_delta = {
                                 "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {"payload": audio_payload}
+                                "stream_sid": stream_sid,
+                                "media": {
+                                    "payload": audio_payload
+                                }
                             }
-                            await websocket.send_json(audio_delta)
+                            
+                            await websocket.send_text(json.dumps(audio_delta))
 
                     # Handle function calls for RAG
                     if response.get("type") == "response.function_call_arguments.done":
